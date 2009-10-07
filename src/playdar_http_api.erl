@@ -39,18 +39,14 @@ http_req(Req) ->
 http_req_authed(Req, Method, Qs, _Auth) ->
     case Method of
         "resolve" ->
-            Artist = proplists:get_value("artist", Qs, ""),
-            Album  = proplists:get_value("album", Qs, ""),
-            Track  = proplists:get_value("track", Qs, ""),
             Qid    = case proplists:get_value("qid", Qs) of
-                undefined -> utils:uuid_gen();
-                Str -> list_to_binary(Str)
+                undefined -> L = Qs, utils:uuid_gen();
+                Str -> L = proplists:delete( "qid", Qs ) ,list_to_binary(Str) 
             end,
-            Q = {struct,[
-                    {<<"artist">>, list_to_binary(Artist)}, 
-                    {<<"album">>,  list_to_binary(Album)}, 
-                    {<<"track">>,  list_to_binary(Track)}
-                ]},
+
+            P = [ {list_to_binary(A), list_to_binary(B)} || {A, B} <- L ],
+
+            Q = {struct, P},
             _Qpid = resolver:dispatch(Q, Qid),
             R = {struct,[
                     {"qid", Qid}

@@ -6,7 +6,7 @@
 
 %% API
 -export([start_link/0, resolve/3, weight/1, targettime/1, name/1]).
--export([scan/2 ]).
+-export([scan/1, scan/2, get_fdb/0, get_fdb/1 ]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -17,7 +17,10 @@
 %%
 
 start_link()        -> gen_server:start_link(?MODULE, [], []).
+scan(Dir)           -> scan(resolver:resolver_pid(?MODULE), Dir).
 scan(Pid, Dir)      -> gen_server:cast(Pid, {scan, Dir}).
+get_fdb()           -> get_fdb(resolver:resolver_pid(?MODULE)).
+get_fdb(Pid)        -> gen_server:call(Pid, get_fdb).
 
 resolve(Pid, Q, Qpid)   -> gen_server:cast(Pid, {resolve, Q, Qpid}).
 weight(_Pid)            -> 100.
@@ -68,6 +71,8 @@ handle_cast({resolve, Q, Qpid}, State) ->
 handle_cast({scan, Dir}, State) ->
     Pid = spawn_link(scanner, scan_dir, [Dir, self()]),
     {noreply, State#state{scanner=Pid}}.
+
+handle_call(get_fdb, _From, State) -> {reply, State#state.fdb, State};
 
 handle_call(_Msg, _From, State) -> {reply, ok, State}.
 
@@ -176,7 +181,4 @@ search(Art,_Alb,Trk,State) ->
                 || {_FileId, FL} <- Files ],
     % sort and return to the top N results:
     lists:sublist( lists:reverse( lists:keysort(2,Results) ), 10 ).
-
-
-
 
