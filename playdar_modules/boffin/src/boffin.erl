@@ -36,27 +36,15 @@ init([]) ->
 handle_cast({resolve, Q, Qpid}, State) ->
     case Q of
         {struct, Mq} -> % Mq is a proplist
-            ?LOG(debug, "Boffin resolving: ~p", [Mq]),
-            Report = fun({Props, Score}) ->
-                Rep =   {struct, [
-                                {<<"artist">>, proplists:get_value(artist, Props)},
-                                {<<"track">>,  proplists:get_value(track, Props)},
-                                {<<"album">>,  proplists:get_value(album, Props)},
-                                {<<"mimetype">>, proplists:get_value(mimetype, Props)},
-                                {<<"score">>, Score},
-                                {<<"url">>, proplists:get_value(url, Props)},
-                                {<<"duration">>, proplists:get_value(duration, Props)},
-                                {<<"bitrate">>, proplists:get_value(bitrate, Props)},
-                                {<<"size">>, proplists:get_value(size, Props)},
-                                {<<"source">>, <<"source_here">>}
-                            ]},
-                qry:add_result(Qpid, Rep)                
-            end,
-            Now = now(),
-            %Do work
-            Time = timer:now_diff(now(), Now),
-            ?LOG(debug, "boffin search took: ~wms",[Time/1000]),
-            qry:add_result(Qpid, {struct, [{<<"artist">>, <<"blah">>}]});
+            io:format( "~n~nBoffin resolving: ~p~n~n", [Mq]),
+            case proplists:get_value( <<"tagcloud">>, Mq, "" ) of
+                "" -> io:format( "Fail!", []), "";
+                
+                Pattern -> 
+                           R = tag_cloud( State ),
+                           io:format( "Adding result:~n ~p ~n", [ {struct,R}] ),
+                           qry:add_results( Qpid, R )
+            end;
         _ -> noop %Unhandled query type
     end,
     {noreply, State};
@@ -126,7 +114,8 @@ add_tags( File, Tokens, State ) ->
     add_tags( File, Rest, State ).
 
 tag_cloud( State ) ->
-    Tags = dets:traverse( State#state.tdb, fun({Key, {_File, Weight}) -> 
+    Tags = dets:traverse( State#state.tdb, fun({Key, {_File, Weight}}) -> 
         {continue, {Key, Weight}}
     end ),
-    io:format( "Tags:~n~p", [Tags] ).
+    Keys = proplists:get_keys( Tags ),
+    lists:map(fun(K)->{struct,[{<<"tag">>,list_to_binary(K)}, {<<"score">>,lists:sum(proplists:get_all_values(K, Tags))}]} end, Keys).
