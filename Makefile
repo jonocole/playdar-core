@@ -54,6 +54,10 @@ playdar_modules/library/ebin:
 	mkdir -p $@
 playdar_modules/library/ebin/%.beam: playdar_modules/library/src/%.erl | playdar_modules/library/ebin
 	erlc $(CFLAGS) -o $(@D) $<
+playdar_modules/boffin/ebin:
+	mkdir -p $@
+playdar_modules/boffin/ebin/%.beam: playdar_modules/boffin/src/%.erl | playdar_modules/boffin/ebin
+	erlc $(CFLAGS) -o $(@D) $<
 
 ebin:
 	mkdir ebin
@@ -64,4 +68,5 @@ clean:
 	rm -rf playdar_modules/fake/ebin
 	rm -rf playdar_modules/library/ebin
 	rm -rf playdar_modules/lan/ebin
+	rm -rf playdar_modules/boffin/ebin
 	rm -f $(ERLYDTL_PARSER)
