@@ -1,14 +1,23 @@
 -module(playdar_http_api).
--export([http_req/1]).
+-export([http_req/2]).
 
-http_req(Req) ->
+http_req(Req, DocRoot) ->
     Qs = Req:parse_qs(),
+	JsonP = proplists:get_value("jsonp", Qs, ""),
     M = proplists:get_value("method", Qs),
     Auth = playdar_auth:check_auth(proplists:get_value("auth",Qs,"")),
+	% If you are using jsonp callbacks, we verify your authcode:
+	Authenticated = case JsonP of
+						"" -> {true, []};
+						_  -> case Auth of
+								  A when is_list(A) -> {true, A};
+								  undefined -> {false, []}
+							  end
+					end,
     case M of
         "stat" ->
-            case Auth of
-                Props when is_list(Props) ->
+            case Authenticated of
+                {true, _Props} ->
                     R = {struct,[   
                             {"name", <<"playdar">>},
                             {"version", <<"0.1.0">>},
@@ -22,7 +31,7 @@ http_req(Req) ->
                             %]}}
                         ]},
                     respond(Req, R);
-                undefined ->
+                {false, _} ->
                     R = {struct, [
                             {"name", <<"playdar">>},
                             {"version", <<"0.1.0">>},
@@ -31,12 +40,18 @@ http_req(Req) ->
                     respond(Req, R)
             end;
 
-        _ -> http_req_authed(Req, M, Qs, Auth)
-
+        _ ->
+			% for all methods other than stat, require auth if jsonp= is used.
+			case Authenticated of
+				{true, AuthProps} ->
+					http_req_authed(Req, DocRoot, M, Qs, AuthProps);
+				{false, _} ->
+					Req:respond({403, [], <<"<h1>Not Authorised</h1>">>})
+			end
     end.
     
 
-http_req_authed(Req, Method, Qs, _Auth) ->
+http_req_authed(Req, _DocRoot, Method, Qs, _Auth) ->
     case Method of
         "resolve" ->
             Qid    = case proplists:get_value("qid", Qs) of
@@ -65,7 +80,9 @@ http_req_authed(Req, Method, Qs, _Auth) ->
                     Q = qry:q(Qpid),
                     R = {struct,[
                             {"qid", Qid},
-                            {"refresh_interval", 1000},
+                            {"refresh_interval", 1000}, % TODO legacy, to be removed
+							{"poll_interval", 1000},
+							{"poll_limit", 6}, % TODO sum of all targettimes from loaded resolvers
                             {"query", Q},
                             {"results", 
                                 [ {struct, proplists:delete(<<"url">>,L)} || 

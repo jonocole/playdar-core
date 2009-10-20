@@ -2,7 +2,7 @@
 -module(qry).
 -behaviour(gen_server).
 -include("playdar.hrl").
--define(MIN_SCORE, 0.5).
+-define(MIN_SCORE, 0.6).
 
 %% API
 -export([start/1, start/2]).
@@ -71,9 +71,9 @@ handle_cast({add_timer, Tref}, State) ->
 handle_cast({add_results, Results}, State) ->
     Uuify = fun(A) ->
         Score = proplists:get_value(<<"score">>, A),
-        case Score of
-            1.0 -> qry:mark_as_solved(self());
-            _ -> noop
+        if
+            Score >= 1 -> qry:mark_as_solved(self());
+            true       -> noop
         end,
         % give it a sid if one isn't provided:
         Sid = proplists:get_value(<<"sid">>, A),

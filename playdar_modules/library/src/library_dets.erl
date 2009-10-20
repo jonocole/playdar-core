@@ -5,41 +5,70 @@
 -behaviour(playdar_resolver).
 
 %% API
--export([start_link/0, resolve/3, weight/1, targettime/1, name/1]).
--export([scan/1, scan/2, get_fdb/0, get_fdb/1 ]).
+-export([start_link/0, resolve/3, weight/1, targettime/1, name/1, dump_library/1]).
+-export([scan/1, scan/2, get_fdb/0, get_fdb/1, stats/1, add_file/5, sync/1 ]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 %% Records
--record(state, {scanner, ndb, fdb}).
+-record(state, {scanner, ndb, fdb, customname}).
 
 %%
 
-start_link()        -> gen_server:start_link(?MODULE, [], []).
-scan(Dir)           -> scan(resolver:resolver_pid(?MODULE), Dir).
-scan(Pid, Dir)      -> gen_server:cast(Pid, {scan, Dir}).
-get_fdb()           -> get_fdb(resolver:resolver_pid(?MODULE)).
-get_fdb(Pid)        -> gen_server:call(Pid, get_fdb).
-
+start_link()            -> gen_server:start_link(?MODULE, [], []).
+scan(Dir)               -> scan(resolver:resolver_pid(?MODULE), Dir).
+scan(Pid, Dir)          -> gen_server:call(Pid, {scan, Dir}, infinity).
+get_fdb()               -> get_fdb(resolver:resolver_pid(?MODULE)).
+get_fdb(Pid)            -> gen_server:call(Pid, get_fdb).
+add_file(Pid, F, Mtime, Size, L) -> gen_server:call(Pid, {add_file, F, Mtime, Size, L}, 60000).
+sync(Pid)               -> gen_server:cast(Pid, sync).
+  
 resolve(Pid, Q, Qpid)   -> gen_server:cast(Pid, {resolve, Q, Qpid}).
 weight(_Pid)            -> 100.
 targettime(_Pid)        -> 20.
 name(_Pid)              -> "Local Library using DETS".
 
+stats(Pid)              -> gen_server:call(Pid, stats).
+
+dump_library(Pid)       -> gen_server:call(Pid, dump_library, 60000).
 %%
 
+% Non-standard init, when used by proxy for another type of library:
+init([Name]) when is_list(Name) ->
+    DbDir = ?CONFVAL({library,dbdir}, "."),
+    {ok, Ndb} = dets:open_file(DbDir++"/"++Name++"_index.db",[{type, bag}]),
+    {ok, Fdb} = dets:open_file(DbDir++"/"++Name++".db", [{type, set}]),
+    ?LOG(info, "Library index (for ~s) contains ~w files", 
+               [Name, proplists:get_value(size, dets:info(Fdb), -1)]),
+    {ok, #state{scanner=undefined, ndb=Ndb, fdb=Fdb, customname=Name}};
+
+% Default init, when acting as normal library resolver
 init([]) ->
-    {ok, Ndb} = dets:open_file("ngrams.dets",[{type, bag}]),
-    {ok, Fdb} = dets:open_file("files.dets", [{type, set}]),
+    DbDir = ?CONFVAL({library,dbdir}, "."),
+    {ok, Ndb} = dets:open_file(DbDir++"/library_index.db",[{type, bag}]),
+    {ok, Fdb} = dets:open_file(DbDir++"/library.db", [{type, set}]),
     ?LOG(info, "Library index contains ~w files", 
                [proplists:get_value(size, dets:info(Fdb), -1)]),
+    % start the scanner (kind of a hack, but deadlock if we do it in init here):
+    self() ! start_scanner,        
     resolver:add_resolver(?MODULE, name(self()), weight(self()), targettime(self()), self()),
-    {ok, #state{scanner=undefined, ndb=Ndb, fdb=Fdb}}.
+    {ok, #state{scanner=undefined, ndb=Ndb, fdb=Fdb, customname=""}}.
+
+handle_cast(sync, State) -> 
+    dets:sync(State#state.fdb),
+    dets:sync(State#state.ndb),
+    ?LOG(info, "library synced", []),
+    {noreply, State};
 
 handle_cast({resolve, Q, Qpid}, State) ->
     case Q of
         {struct, Mq} -> % Mq is a proplist
+            Hostname = ?CONFVAL(name, "unknown"),
+			Name = case State#state.customname of
+					   "" -> Hostname;
+					   C  -> Hostname ++ "/" ++ C
+				   end,
             Report = fun({Props, Score}) ->
                 Rep =   {struct, [
                                 {<<"artist">>, proplists:get_value(artist, Props)},
@@ -51,7 +80,7 @@ handle_cast({resolve, Q, Qpid}, State) ->
                                 {<<"duration">>, proplists:get_value(duration, Props)},
                                 {<<"bitrate">>, proplists:get_value(bitrate, Props)},
                                 {<<"size">>, proplists:get_value(size, Props)},
-                                {<<"source">>, <<"source_here">>}
+                                {<<"source">>, list_to_binary(Name)}
                             ]},
                 qry:add_result(Qpid, Rep)                
             end,
@@ -61,7 +90,7 @@ handle_cast({resolve, Q, Qpid}, State) ->
             Now = now(),
             Files = search(clean(Art),clean(Alb),clean(Trk),State),
             Time = timer:now_diff(now(), Now),
-            ?LOG(debug, "Library_dets search took: ~wms for ~s - ~s",[Time/1000, Art, Trk]),
+            ?LOG(info, "Library search took: ~wms for ~s - ~s",[Time/1000, Art, Trk]),
             lists:foreach(Report, Files);
 
         _ -> noop %Unhandled query type
@@ -74,19 +103,7 @@ handle_cast({scan, Dir}, State) ->
 
 handle_call(get_fdb, _From, State) -> {reply, State#state.fdb, State};
 
-handle_call(_Msg, _From, State) -> {reply, ok, State}.
-
-handle_info({'EXIT', Pid, Reason}, #state{scanner = Pid} = State) ->
-    io:format("Scanner crashed: ~w~n", [Reason]),
-    {noreply, State#state{scanner=undefined}};
-
-handle_info({scanner, finished}, State) -> 
-    dets:sync(State#state.fdb),
-    dets:sync(State#state.ndb),
-    io:format  ("Scan finished!~n",[]),
-    {noreply, State#state{scanner=undefined}};
-
-handle_info({scanner, {file, File, Mtime, Size, Tags}}, State) when is_list(Tags), is_list(File) ->
+handle_call({add_file, File, Mtime, Size, Tags}, _From, State) when is_list(Tags), is_list(File) ->
     case proplists:get_value(<<"error">>, Tags) of
         undefined ->
             Art = proplists:get_value(<<"artist">>, Tags, <<"">>),
@@ -95,7 +112,7 @@ handle_info({scanner, {file, File, Mtime, Size, Tags}}, State) when is_list(Tags
             Artist = clean(Art),
             Album  = clean(Alb),
             Track  = clean(Trk),
-            FileId = list_to_atom(File),
+            FileId = list_to_binary(File), %TODO hmm.
             Props = [   {url, proplists:get_value(<<"url">>, Tags, <<"">>)},
                         {artist, Art},
                         {album,  Alb},
@@ -117,13 +134,40 @@ handle_info({scanner, {file, File, Mtime, Size, Tags}}, State) when is_list(Tags
             Track_Ngrams  = [ {{track, list_to_atom(Gram)}, FileId} 
                               || {Gram, _Num} <- ngram(Track)],
             ok = dets:insert(State#state.ndb, Artist_Ngrams),
-            ok = dets:insert(State#state.ndb, Track_Ngrams);
+            ok = dets:insert(State#state.ndb, Track_Ngrams),
+            {reply, ok, State};
         _Err ->
-            noop
-    end,
+            {reply, error, State}
+    end;
 
-    {noreply, State}.
+handle_call({scan, Dir}, From, State) ->
+    spawn(fun()->
+                  gen_server:reply(From, (catch scanner:scan_dir(State#state.scanner, Dir)))
+          end),
+    {noreply, State};
 
+handle_call(stats, _From, State) ->
+    NumFiles = proplists:get_value(size, dets:info(State#state.fdb), -1),
+    {reply, [{num_files, NumFiles}], State};
+    
+handle_call(dump_library, _From, State) ->
+    All = dets:traverse(State#state.fdb, fun({_Fid, X}) -> {continue, X} end),
+    {reply, All, State};
+    
+handle_call(_Msg, _From, State) -> {reply, ok, State}.
+
+handle_info({scanner, finished}, State) -> 
+    dets:sync(State#state.fdb),
+    dets:sync(State#state.ndb),
+    io:format  ("Scan finished!~n",[]),
+    {noreply, State#state{scanner=undefined}};
+
+handle_info(start_scanner, State) ->
+    ScannerSpec = {scanner, {scanner, start_link, [self()]}, permanent, brutal_kill, worker, [scanner]},
+    {ok, S} = supervisor:start_child(modules_sup, ScannerSpec),
+    {noreply, State#state{scanner=S}};
+
+handle_info(_Msg, State) -> {noreply, State}.
 
 terminate(_Reason, _State) ->
     mnesia:stop(),
@@ -168,17 +212,37 @@ search(Art,_Alb,Trk,State) ->
                 [P]-> P
               end || {FileId, _CandScore} <- C ],
     % next do the edit-distance calculation to generate a final score:
+	case ?CONFVAL(explain, false) of
+		true	-> ?LOG(info, "Scoring: ~s - ~s", [Art, Trk]);
+		false	-> ok
+	end,
     Results = [ begin
                     ArtClean = proplists:get_value(artist_clean, FL),
                     TrkClean = proplists:get_value(track_clean, FL),
-                    ArtDist = utils:levenshtein(Art, ArtClean),
-                    TrkDist = utils:levenshtein(Trk, TrkClean),
-                    TLen = length(ArtClean)+length(TrkClean),
-                    TDist = utils:min(TLen, ArtDist + TrkDist),
-                    Score = (TLen - TDist)/TLen,                    
+                    Score = calc_score({ArtClean, Art},
+									   {TrkClean, Trk}),
                     { FL, Score }
                 end
                 || {_FileId, FL} <- Files ],
     % sort and return to the top N results:
     lists:sublist( lists:reverse( lists:keysort(2,Results) ), 10 ).
 
+% score betweek 0-1 when ArtClean is original, Art is the input/query etc
+calc_score({ArtClean, Art}, {TrkClean, Trk}) ->
+	ArtDist = utils:levenshtein(Art, ArtClean),
+	TrkDist = utils:levenshtein(Trk, TrkClean),
+	% calc 0-1 scores for artist and track match:
+	MaxArt = utils:max(0.001, length(ArtClean)),
+	MaxTrk = utils:max(0.001, length(TrkClean)),
+	ArtScore0 = utils:max(0, length(ArtClean) - ArtDist) / MaxArt,
+	TrkScore0 = utils:max(0, length(TrkClean) - TrkDist) / MaxTrk,
+	% exagerate lower scores
+	ArtScore = 1-math:cos(ArtScore0*math:pi()/2),
+	TrkScore = 1-math:cos(TrkScore0*math:pi()/2),
+	% combine them, weighting artist more than track:
+	Score = (ArtScore + TrkScore)/2.0,
+	case ?CONFVAL(explain, false) of
+		true	-> ?LOG(info, "Score:~f Art:~f Trk:~f\t~s - ~s", [Score, ArtScore, TrkScore, ArtClean, TrkClean]);
+		false	-> ok
+	end,
+	Score.

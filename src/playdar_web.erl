@@ -4,25 +4,16 @@
 %% @doc Web server for playdar.
 
 -module(playdar_web).
--export([start/1, stop/0, loop/2]).
+-export([start/1, stop/0, loop/2, render/3]).
 -include("playdar.hrl").
 
 %% External API
 
 start(Options) ->
     {DocRoot, Options1} = get_option(docroot, Options),
-    {Port, Options2} = get_option(port, Options1),
-    {Ip, Options3} = get_option(ip, Options2),
-    Loop = fun (Req) -> ?MODULE:loop(Req, DocRoot) end,
-    MochiOpts = [   {max, 20},
-                    {port, 60210},
-                    {ip, Ip},
-                    %{docroot, DocRoot},
-                    {name, ?MODULE}, 
-                    {loop, Loop}
-                    | Options3
-                ],
-    mochiweb_http:start(MochiOpts).
+    Loop = fun(Req) -> ?MODULE:loop(Req, DocRoot) end,
+    Opts = [ {loop, Loop}, {name, ?MODULE} | Options1 ],
+    mochiweb_http:start(Opts).
                 
 
 stop() ->
@@ -32,16 +23,36 @@ loop(Req, DocRoot) ->
     % TODO filter non /sid/ reqs unless from localhost
 	{R1,R2,R3} = now(),
 	random:seed(R1,R2,R3),
-    ?LOG(info, "~s ~s", [string:to_upper(atom_to_list(Req:get(method))),
-                         Req:get(raw_path)]),
-    
-    "/" ++ Path = Req:get(path),
+    Peer = Req:get(peer),
+    ?LOG(info, "~s ~s ~s", [string:to_upper(atom_to_list(Req:get(method))),
+                            Req:get(raw_path), Peer]),
+    % Reqs from localhost can do anything
+    % reqs from elsewhere are only allowed to stream.
+    % this presumes they did the resolving using lan plugin or something.
+    case Req:get(peer) of
+        "127.0.0.1"         -> loop1(Req, DocRoot);
+        "::1"               -> loop1(Req, DocRoot);
+        "0:0:0:0:0:0:0:1"   -> loop1(Req, DocRoot);
+        _ ->
+            case Req:get(path) of
+                "/sid/" ++ _ -> 
+                    loop1(Req, DocRoot);
+                _ ->
+                    Req:respond({403, [], <<"<h1>Not Authorised</h1>">>})
+            end
+    end.
+                    
+loop1(Req, DocRoot) ->    
+    "/" ++ Path = Req:get(path),        
     case Path of
         "" -> 
             Resolvers = [ [{"mod", atom_to_list(proplists:get_value(mod, Pl))}|proplists:delete(mod,Pl)]
                                || Pl <- resolver:resolvers() ],
+            HttpMenus = http_registry:get_all(),
             Vars = [ {resolvers, Resolvers}, 
-                     {protocols, playdar_reader_registry:get_all()} ],
+                     {protocols, playdar_reader_registry:get_all()},
+                     {http_paths, HttpMenus}
+                   ],
             render(Req, DocRoot ++ "/index.html", Vars);
         
         % serving a file that was found by a query, based on SID:
@@ -174,13 +185,21 @@ loop(Req, DocRoot) ->
         io:format("static:~s~n",[StaticFile]),
             Req:serve_file("static/" ++ StaticFile, DocRoot);
 
+		"crossdomain.xml" ->
+			case ?CONFVAL(crossdomain, false) of
+				true ->
+					Req:serve_file("crossdomain.xml", DocRoot);
+				false ->
+					Req:not_found()
+			end;
+		
         % hand off dynamically:
         _ -> 
             case http_registry:get_handler(Req:get(path)) of
                 undefined ->
                     Req:not_found();     
                 Handler ->
-                    Handler(Req)
+                    Handler(Req, DocRoot)
             end
     end.
 

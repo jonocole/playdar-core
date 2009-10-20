@@ -14,9 +14,10 @@ start_link() ->
 init([]) ->
     ModDir = "playdar_modules",
     % get all suitable subdirs (that contain an ebin dir)
-    Dirs = [ Dir || Dir <- filelib:wildcard(ModDir ++ "/*"), 
-                           filelib:is_dir(Dir), 
-                           filelib:is_dir(Dir++"/ebin") ],
+    Dirs0 = [ Dir || Dir <- filelib:wildcard(ModDir ++ "/*"), 
+                            filelib:is_dir(Dir), 
+                            filelib:is_dir(Dir++"/ebin") ],
+    Dirs = [ D || D <- Dirs0, begin L = string:tokens(D, "/"), lists:member(lists:nth(length(L),L), ?CONFVAL(modules_blacklist,[])) == false end ],
     Specs0 = [
         case A = filelib:wildcard(Dir++"/ebin/*.app") of
             % Is this module an OTP Application:
@@ -46,9 +47,10 @@ init([]) ->
     
     Specs = [ Spec || Spec <- lists:flatten(Specs0), Spec /= undefined ],
     % anything to start?
+    %?LOG(info, "Starting modules: ~p", [Specs]),
     case Specs of
         [] -> ignore;
-        _  -> {ok,{{one_for_all,0,1}, Specs}}
+        _  -> {ok,{{one_for_one,0,1}, Specs}}
     end.
 
 %% ====================================================================
@@ -84,7 +86,7 @@ process_module(Mod) ->
                 true  ->
                     lists:foreach( fun({Proto, F}) ->
                                     playdar_reader_registry:register_handler(Proto, F)
-                                   end, Mod:init(protocols));
+                                   end, Mod:reader_protocols());
                 false -> nevermind
             end,
             case lists:member(playdar_resolver, Behaviours) of 
@@ -97,8 +99,4 @@ process_module(Mod) ->
                 false -> undefined
             end
     end.
-
-
-
-
 

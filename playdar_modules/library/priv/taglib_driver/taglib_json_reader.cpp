@@ -9,11 +9,11 @@
 #include <taglib/fileref.h>
 #include <taglib/tag.h>
 
-#include <boost/algorithm/string.hpp>
-
 #include <iostream>
 #include <cstdio>
 #include <sstream>
+#include <algorithm>
+#include <string>
 
 #include <netinet/in.h> // for htonl etc
 
@@ -26,6 +26,16 @@ string toUtf8(const wstring& i);
 #define fromUtf8(s) (s)
 #define toUtf8(s) (s)
 #endif
+
+void trim(string& str)
+{
+    size_t startpos = str.find_first_not_of(" \t");
+    size_t endpos = str.find_last_not_of(" \t");
+    if(( string::npos == startpos ) || ( string::npos == endpos))
+        str = "";
+    else
+        str = str.substr( startpos, endpos-startpos+1 );
+}
 
 string urlify(const string& p)
 {
@@ -50,6 +60,7 @@ string ext2mime(const string& ext)
     if(ext==".aac") return "audio/mp4";
     if(ext==".mp4") return "audio/mp4";
     if(ext==".m4a") return "audio/mp4";
+    if(ext==".ogg") return "application/ogg";
     cerr << "Warning, unhandled file extension. Don't know mimetype for " << ext << endl;
      //generic:
     return "application/octet-stream";
@@ -79,6 +90,23 @@ string tidy(const string& s)
     return r;
 }
 
+string esc(const string& s)
+{
+    string r;
+    bool prevWasSpace = false;
+    r.reserve(s.length()+4);
+    for (string::const_iterator i = s.begin(); i != s.end(); i++) {
+        if (*i == '"') {
+            r += '\\';
+            r += '"';
+            prevWasSpace = false;
+        } else {
+            r += *i;
+            prevWasSpace = false;
+        }
+    }
+    return r;
+}
 
 
 string scan_file(const char* path)
@@ -96,21 +124,22 @@ string scan_file(const char* path)
         string artist = tag->artist().toCString(true);
         string album  = tag->album().toCString(true);
         string track  = tag->title().toCString(true);
-        boost::trim(artist);
-        boost::trim(album);
-        boost::trim(track);
+        trim(artist);
+        trim(album);
+        trim(track);
         if (artist.length()==0 || track.length()==0) {
             return "{\"error\" : \"no tags\"}\n";
         }
         string pathstr(path);
         string ext = pathstr.substr(pathstr.length()-4);
-        string mimetype = ext2mime(boost::to_lower_copy(ext));
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        string mimetype = ext2mime(ext);
         // turn it into a url by prepending file://
         // because we pass all urls to curl:
         string urlpath = urlify( toUtf8(path) );
 
         ostringstream os;
-        os      <<  "{  \"url\" : \"" << urlpath << "\","
+        os      <<  "{  \"url\" : \"" << esc(urlpath) << "\","
                     "   \"mimetype\" : \"" << mimetype << "\","
                     "   \"artist\" : \"" << tidy(artist) << "\","
                     "   \"album\" : \"" << tidy(album) << "\","

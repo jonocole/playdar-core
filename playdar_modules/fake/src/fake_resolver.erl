@@ -32,14 +32,15 @@ handle_cast({resolve, Q, Qpid}, State) ->
     case Q of
         {struct, Mq} -> % Mq is a proplist
             case string:to_lower(
-                 binary_to_list(proplists:get_value(<<"artist">>, Mq))) of
+                 binary_to_list(proplists:get_value(<<"artist">>, Mq, ""))) of
                 "mokele" ->
                     Rep =   {struct, [
                                 {<<"artist">>, <<"Mokele">>},
-                                {<<"track">>,  <<"Hiding in your Insides">>},
+                                {<<"track">>,  <<"Hiding in your Insides!">>},
                                 {<<"album">>,  <<"">>},
                                 {<<"score">>, 0.2},
-                                {<<"url">>, <<"http://www.playdar.org/hiding.mp3">>}
+                                {<<"url">>, <<"file:///tmp/test.txt">>}
+								%{<<"url">>, <<"http://www.playdar.org/hiding.mp3">>}
                             ]},
                     qry:add_result(Qpid, Rep);
                 _ -> noop

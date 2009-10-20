@@ -48,7 +48,7 @@ init([]) ->
     % and this one maps Source IDs to query pids
     Tid2= ets:new(sources, []),
     % Load script-resolvers:
-    Scripts = [ "/home/rj/src/playdar/contrib/demo-script/demo-resolver.php" ],
+    Scripts = ?CONFVAL(scripts, []),
     ScriptSpecs = [ {list_to_atom(Script), 
                      {script_resolver, start_link, [Script]}, 
                      transient, 5, worker, [script_resolver]} 
@@ -98,7 +98,7 @@ handle_call({sid2pid, Sid}, _From, State) ->
 handle_call({dispatch, Q, Qid, Cbs}, _From, State) ->
 	% First of all, do nothing if a query with this Qid already exists:
 	case ets:lookup(State#state.queries, {qid, Qid}) of
-		[P] when is_pid(P) ->
+		[{_,P}] when is_pid(P) ->
 			{reply, P, State};
 		_ ->
 			% spawn a qry process to hold this query:
